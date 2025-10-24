@@ -1,0 +1,141 @@
+version: '3.8'
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:7.0
+    container_name: knowledge-graph-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+      MONGO_INITDB_DATABASE: knowledge-graph-rag
+    volumes:
+      - mongodb_data:/data/db
+      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - knowledge-graph-network
+
+  # QdrantDB Vector Database
+  qdrant:
+    image: qdrant/qdrant:v1.7.0
+    container_name: knowledge-graph-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: 6333
+      QDRANT__SERVICE__GRPC_PORT: 6334
+    networks:
+      - knowledge-graph-network
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: knowledge-graph-backend
+    restart: unless-stopped
+    ports:
+      - "4433:4433"
+    environment:
+      NODE_ENV: production
+      PORT: 4433
+      MONGODB_URI: mongodb://admin:password@mongodb:27017/knowledge-graph-rag?authSource=admin
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION_NAME: knowledge_embeddings
+      JWT_SECRET: your-super-secret-jwt-key-change-this-in-production
+      CORS_ORIGIN: http://localhost:5173
+    depends_on:
+      - mongodb
+      - qdrant
+    volumes:
+      - ./backend/logs:/app/logs
+      - ./backend/uploads:/app/uploads
+    networks:
+      - knowledge-graph-network
+
+  # Frontend React App
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: knowledge-graph-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:4433/api
+      VITE_WS_URL: http://localhost:4433
+    depends_on:
+      - backend
+    networks:
+      - knowledge-graph-network
+
+  # Ollama (Optional - for local AI models)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: knowledge-graph-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0
+    networks:
+      - knowledge-graph-network
+    profiles:
+      - ollama
+
+  # Redis (Optional - for caching)
+  redis:
+    image: redis:7.2-alpine
+    container_name: knowledge-graph-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - knowledge-graph-network
+    profiles:
+      - redis
+
+  # Nginx (Optional - for production reverse proxy)
+  nginx:
+    image: nginx:alpine
+    container_name: knowledge-graph-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - knowledge-graph-network
+    profiles:
+      - nginx
+
+volumes:
+  mongodb_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  ollama_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  knowledge-graph-network:
+    driver: bridge
